@@ -7,10 +7,16 @@ This SDK is designed for low-change, low-touch customer integration.
 - Explicit timeout and retry controls.
 - Streaming chat support (`text/event-stream`).
 
+## Retry safety
+- **429 / 5xx** automatic retries apply only to **GET** and **HEAD**. **POST / PUT / PATCH** are not retried on those status codes to avoid duplicate side effects.
+
 ## Install
-`Maven: <dependency><groupId>com.egroupai</groupId><artifactId>ai-sandbox-sdk-java</artifactId></dependency>`
+`Maven: <dependency><groupId>com.egroupai</groupId><artifactId>ai-sandbox-sdk-java</artifactId><version>1.0.0</version></dependency>`
 
 ## First Steps
-1. Configure `base_url` and `api_key`.
-2. Call `create_agent`.
-3. Create chat channel and send the first message.
+1. Construct `AiSandboxClient` with `baseUrl` and `apiKey`.
+2. Call `createAgent(...)`.
+3. Create a chat channel with `createChatChannel(...)` and send the first message with `sendChat(...)` or `sendChatStream(...)`.
+
+## Errors
+- On HTTP errors, `ApiException` includes optional `getTraceId()` when the server sends `x-trace-id`.

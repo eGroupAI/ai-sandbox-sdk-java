@@ -50,12 +50,15 @@ public class AiSandboxClient {
       }
       HttpResponse<String> response = client.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
       int status = response.statusCode();
-      if ((status == 429 || status >= 500) && attempt < maxRetries) {
+      if (HttpRetryPolicy.shouldRetryTransientHttpStatus(method, status) && attempt < maxRetries) {
         attempt += 1;
         Thread.sleep(200L * attempt);
         continue;
       }
-      if (status >= 400) throw new ApiException(status, response.body());
+      if (status >= 400) {
+        String trace = response.headers().firstValue("x-trace-id").orElse(null);
+        throw new ApiException(status, response.body(), trace);
+      }
       return response;
     }
   }
@@ -109,7 +112,13 @@ public class AiSandboxClient {
       .build();
 
     HttpResponse<java.io.InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-    if (response.statusCode() >= 400) throw new ApiException(response.statusCode(), "stream request failed");
+    if (response.statusCode() >= 400) {
+      String trace = response.headers().firstValue("x-trace-id").orElse(null);
+      try (var in = response.body(); var br = new BufferedReader(new InputStreamReader(in))) {
+        String errBody = br.lines().reduce((a, b) -> a + "\n" + b).orElse("stream request failed");
+        throw new ApiException(response.statusCode(), errBody, trace);
+      }
+    }
 
     List<String> chunks = new ArrayList<>();
     try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body()))) {
