@@ -3,11 +3,13 @@ package com.egroupai.sandbox.sdk;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +36,15 @@ public class AiSandboxClient {
     this.mapper = new ObjectMapper();
   }
 
+  private void sleepForRetry(int attempt) throws InterruptedException {
+    try {
+      Thread.sleep(HttpRetryPolicy.retryDelayMillis(attempt));
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      throw ex;
+    }
+  }
+
   private HttpResponse<String> sendJson(String method, String path, Map<String, Object> body) throws Exception {
     int attempt = 0;
     while (true) {
@@ -48,11 +59,24 @@ public class AiSandboxClient {
       } else {
         requestBuilder.method(method, HttpRequest.BodyPublishers.noBody());
       }
-      HttpResponse<String> response = client.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> response;
+      try {
+        response = client.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
+      } catch (IOException ex) {
+        if (attempt < maxRetries) {
+          attempt += 1;
+          sleepForRetry(attempt);
+          continue;
+        }
+        throw ex;
+      } catch (InterruptedException ex) {
+        Thread.currentThread().interrupt();
+        throw ex;
+      }
       int status = response.statusCode();
       if (HttpRetryPolicy.shouldRetryTransientHttpStatus(method, status) && attempt < maxRetries) {
         attempt += 1;
-        Thread.sleep(200L * attempt);
+        sleepForRetry(attempt);
         continue;
       }
       if (status >= 400) {
@@ -102,34 +126,51 @@ public class AiSandboxClient {
   }
 
   public List<String> sendChatStream(int agentId, Map<String, Object> payload) throws Exception {
-    HttpRequest request = HttpRequest.newBuilder()
-      .uri(URI.create(baseUrl + "/api/v1/agents/" + agentId + "/chat"))
-      .timeout(timeout)
-      .header("Authorization", "Bearer " + apiKey)
-      .header("Accept", "text/event-stream")
-      .header("Content-Type", "application/json")
-      .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
-      .build();
+    int attempt = 0;
+    while (true) {
+      HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(baseUrl + "/api/v1/agents/" + agentId + "/chat"))
+        .timeout(timeout)
+        .header("Authorization", "Bearer " + apiKey)
+        .header("Accept", "text/event-stream")
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
+        .build();
 
-    HttpResponse<java.io.InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-    if (response.statusCode() >= 400) {
-      String trace = response.headers().firstValue("x-trace-id").orElse(null);
-      try (var in = response.body(); var br = new BufferedReader(new InputStreamReader(in))) {
-        String errBody = br.lines().reduce((a, b) -> a + "\n" + b).orElse("stream request failed");
-        throw new ApiException(response.statusCode(), errBody, trace);
+      HttpResponse<java.io.InputStream> response;
+      try {
+        response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+      } catch (IOException ex) {
+        if (attempt < maxRetries) {
+          attempt += 1;
+          sleepForRetry(attempt);
+          continue;
+        }
+        throw ex;
+      } catch (InterruptedException ex) {
+        Thread.currentThread().interrupt();
+        throw ex;
       }
-    }
 
-    List<String> chunks = new ArrayList<>();
-    try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body()))) {
-      String line;
-      while ((line = reader.readLine()) != null) {
-        if (!line.startsWith("data: ")) continue;
-        String data = line.substring(6).trim();
-        if ("[DONE]".equals(data)) break;
-        chunks.add(data);
+      if (response.statusCode() >= 400) {
+        String trace = response.headers().firstValue("x-trace-id").orElse(null);
+        try (var in = response.body(); var br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+          String errBody = br.lines().reduce((a, b) -> a + "\n" + b).orElse("stream request failed");
+          throw new ApiException(response.statusCode(), errBody, trace);
+        }
       }
+
+      List<String> chunks = new ArrayList<>();
+      try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+        String line;
+        while ((line = reader.readLine()) != null) {
+          if (!line.startsWith("data: ")) continue;
+          String data = line.substring(6).trim();
+          if ("[DONE]".equals(data)) break;
+          chunks.add(data);
+        }
+      }
+      return chunks;
     }
-    return chunks;
   }
 }
