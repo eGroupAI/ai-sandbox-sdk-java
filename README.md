@@ -83,3 +83,7 @@ chunks.forEach(System.out::println);
 - [Integration Guide](docs/INTEGRATION.md)
 - [Quickstart Example](src/main/java/com/egroupai/sandbox/sdk/examples/Quickstart.java)
 - [Repository](https://github.com/eGroupAI/ai-sandbox-sdk-java)
+
+## License
+
+This SDK is released under the Apache-2.0 license.
